@@ -132,8 +132,7 @@ public class Register
         FeatureManager.INSTANCE.getFeatures().add(new AutoLog());
         FeatureManager.INSTANCE.getFeatures().add(new AutoWeb());
         FeatureManager.INSTANCE.getFeatures().add(new AntiRevert());
-        FeatureManager.INSTANCE.getFeatures().add(new PistonKick());
-        FeatureManager.INSTANCE.getFeatures().add(new PistonCrystal());
+        FeatureManager.INSTANCE.getFeatures().add(new AntiHolecamp());
         FeatureManager.INSTANCE.getFeatures().add(new AimAssist());
         FeatureManager.INSTANCE.getFeatures().add(new AutoAnchor());
         FeatureManager.INSTANCE.getFeatures().add(new BowAim());
