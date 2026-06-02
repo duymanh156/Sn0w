@@ -22,6 +22,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
@@ -33,7 +34,6 @@ public class PistonCrystal extends Module {
     private long lastPlaceTime = 0;
     private long lastAttackTime = 0;
     
-    // Settings
     Value<Number> minDamage = new ValueBuilder<Number>()
             .withDescriptor("MinDamage")
             .withValue(7.0)
@@ -136,15 +136,12 @@ public class PistonCrystal extends Module {
             .withValue(true)
             .register(this);
     
-    // State variables
     private PlayerEntity target;
     private PistonData currentData;
-    private boolean didPiston = false;
-    private boolean didRedstone = false;
-    private boolean didCrystal = false;
-    private BlockPos toPlace;
-    private int slot;
-    private int extrapolationOffset = 0;
+    private boolean didPiston;
+    private boolean didRedstone;
+    private boolean didCrystal;
+    private int extrapolationOffset;
     
     public PistonCrystal() {
         super("PistonCrystal", Category.Combat);
@@ -168,12 +165,6 @@ public class PistonCrystal extends Module {
         
         if (currentTime - lastPlaceTime < delay.getValue().intValue() * 50L) return;
         
-        if (!hasRequiredItems()) {
-            ChatUtils.sendMessage("[PistonCrystal] Missing required items!");
-            this.toggle();
-            return;
-        }
-        
         if (currentData == null) {
             currentData = getBestPosition(target);
             if (currentData == null) return;
@@ -183,96 +174,89 @@ public class PistonCrystal extends Module {
         }
         
         if (!didPiston) {
-            slot = getPistonSlot();
-            toPlace = currentData.pistonPos;
+            if (tryPlace(currentData.pistonPos, getPistonItem(), true)) {
+                didPiston = true;
+                lastPlaceTime = currentTime;
+            }
         } else if (!didRedstone) {
-            slot = getRedstoneSlot();
-            toPlace = currentData.redstonePos;
+            if (tryPlace(currentData.redstonePos, getRedstoneItem(), true)) {
+                didRedstone = true;
+                lastAttackTime = currentTime;
+                lastPlaceTime = currentTime;
+            }
         } else if (!didCrystal) {
-            if (currentTime - lastAttackTime < attackWait.getValue().intValue() * 50L) return;
-            slot = InventoryUtils.getHotbarItemSlot(Items.END_CRYSTAL);
-            toPlace = currentData.crystalPos;
+            if (currentTime - lastAttackTime >= attackWait.getValue().intValue() * 50L) {
+                if (tryPlace(currentData.crystalPos, Items.END_CRYSTAL, false)) {
+                    didCrystal = true;
+                    lastAttackTime = currentTime;
+                    lastPlaceTime = currentTime;
+                }
+            }
         } else {
             if (breakCrystal.getValue() && currentTime - lastAttackTime >= attackWait.getValue().intValue() * 50L) {
                 attackCrystal();
             }
             resetState();
-            this.toggle();
+            toggle();
             return;
         }
-        
-        if (toPlace != null && slot != -1) {
-            // Rotation for piston (giống AntiHolecamp)
-            if (rotate.getValue() && !didPiston && currentData != null) {
-                if (currentData.pistonDir == Direction.NORTH) {
-                    RotationUtils.packetRotate(180, 0);
-                } else if (currentData.pistonDir == Direction.SOUTH) {
-                    RotationUtils.packetRotate(0, 0);
-                } else if (currentData.pistonDir == Direction.WEST) {
-                    RotationUtils.packetRotate(90, 0);
-                } else if (currentData.pistonDir == Direction.EAST) {
-                    RotationUtils.packetRotate(-90, 0);
-                }
-            } else if (rotate.getValue() && !didCrystal) {
-                if (didRedstone) {
-                    RotationUtils.doRotate(toPlace);
-                } else {
-                    RotationUtils.doRotate(toPlace, grim.getValue());
-                }
-            } else if (rotate.getValue() && didCrystal) {
-                RotationUtils.doRotate(toPlace);
+    }
+    
+    private boolean tryPlace(BlockPos pos, Item item, boolean needDirection) {
+        // NONE mode check
+        if (swapAction.getValue().equals("NONE")) {
+            if (!mc.player.getMainHandStack().getItem().equals(item)) {
+                return false;
             }
-            
-            int oldSlot = mc.player.getInventory().selectedSlot;
-            
-            switch (swapAction.getValue()) {
-                case "HOTBAR" -> InventoryUtils.switchToSlot(slot);
-                case "SCREEN" -> InventoryUtils.switchToSlotGhost(slot);
-                default -> {}
-            }
-            
-            Direction side = null;
-            if (!didCrystal) {
-                side = BlockUtils.getPlaceableSide(toPlace, grim.getValue());
-            } else {
-                side = Direction.UP;
-            }
-            
-            if (side != null) {
-                BlockUtils.placeBlock(toPlace, side, false, true);
-            }
-            
-            if (swapAction.getValue().equals("HOTBAR") && oldSlot != mc.player.getInventory().selectedSlot) {
-                InventoryUtils.switchToSlot(oldSlot);
-            }
-            
-            if (!didPiston) {
-                didPiston = true;
-                lastPlaceTime = currentTime;
-            } else if (!didRedstone) {
-                didRedstone = true;
-                lastAttackTime = currentTime;
-                lastPlaceTime = currentTime;
-            } else if (!didCrystal) {
-                didCrystal = true;
-                lastAttackTime = currentTime;
-                lastPlaceTime = currentTime;
-            }
-            
-            toPlace = null;
         }
-    }
-    
-    private int getPistonSlot() {
-        int slot = InventoryUtils.getHotbarItemSlot(Items.PISTON);
-        if (slot == -1) slot = InventoryUtils.getHotbarItemSlot(Items.STICKY_PISTON);
-        return slot;
-    }
-    
-    private int getRedstoneSlot() {
-        int slot = InventoryUtils.getHotbarItemSlot(Items.REDSTONE_TORCH);
-        if (slot == -1) slot = InventoryUtils.getHotbarItemSlot(Items.REDSTONE_BLOCK);
-        return slot;
+        
+        // Get slot
+        int slot = -1;
+        switch (swapAction.getValue()) {
+            case "SCREEN":
+                slot = getInventoryItemSlot(item);
+                if (slot != -1) InventoryUtils.switchToSlotGhost(slot);
+                break;
+            case "HOTBAR":
+                slot = InventoryUtils.getHotbarItemSlot(item);
+                if (slot != -1) InventoryUtils.switchToSlot(slot);
+                break;
+            case "NONE":
+                slot = mc.player.getInventory().selectedSlot;
+                break;
+        }
+        
+        if (slot == -1) return false;
+        if (!mc.player.getMainHandStack().getItem().equals(item)) return false;
+        
+        // Get side
+        Direction side = null;
+        if (needDirection) {
+            side = BlockUtils.getPlaceableSide(pos, grim.getValue());
+            if (side == null) return false;
+        } else {
+            side = Direction.UP;
+        }
+        
+        // Rotate
+        if (rotate.getValue()) {
+            if (needDirection) {
+                RotationUtils.doRotate(pos, side);
+            } else {
+                RotationUtils.doRotate(pos);
+            }
+        }
+        
+        // Place
+        int oldSlot = mc.player.getInventory().selectedSlot;
+        boolean success = BlockUtils.placeBlock(pos, side, false, true);
+        
+        // Restore slot for HOTBAR mode
+        if (swapAction.getValue().equals("HOTBAR") && oldSlot != mc.player.getInventory().selectedSlot) {
+            InventoryUtils.switchToSlot(oldSlot);
+        }
+        
+        return success;
     }
     
     private int getInventoryItemSlot(Item item) {
@@ -284,58 +268,46 @@ public class PistonCrystal extends Module {
         return -1;
     }
     
-    private boolean hasRequiredItems() {
-        switch (swapAction.getValue()) {
-            case "NONE":
-                return true;
-            case "HOTBAR":
-                return InventoryUtils.getHotbarItemSlot(Items.PISTON) != -1 
-                    || InventoryUtils.getHotbarItemSlot(Items.STICKY_PISTON) != -1;
-            default:
-                return getInventoryItemSlot(Items.PISTON) != -1 
-                    || getInventoryItemSlot(Items.STICKY_PISTON) != -1;
-        }
+    private Item getPistonItem() {
+        if (InventoryUtils.getHotbarItemSlot(Items.PISTON) != -1) return Items.PISTON;
+        if (InventoryUtils.getHotbarItemSlot(Items.STICKY_PISTON) != -1) return Items.STICKY_PISTON;
+        return Items.PISTON;
+    }
+    
+    private Item getRedstoneItem() {
+        if (InventoryUtils.getHotbarItemSlot(Items.REDSTONE_TORCH) != -1) return Items.REDSTONE_TORCH;
+        if (InventoryUtils.getHotbarItemSlot(Items.REDSTONE_BLOCK) != -1) return Items.REDSTONE_BLOCK;
+        return Items.REDSTONE_TORCH;
     }
     
     private void attackCrystal() {
-        for (Entity entity : mc.world.getEntities()) {
-            if (entity instanceof EndCrystalEntity crystal && crystal.isAlive() 
-                && mc.player.distanceTo(crystal) <= breakRange.getValue().doubleValue()) {
-                if (rotate.getValue()) {
-                    float[] rots = RotationUtils.getRotationsTo(mc.player.getEyePos(), crystal.getPos());
-                    RotationUtils.setRotation(rots);
-                }
-                PlayerUtils.attackTarget(crystal);
-                break;
-            }
-        }
-    }
-    
-    private PlayerEntity getTarget() {
-        PlayerEntity closest = null;
-        double closestDist = targetRange.getValue().doubleValue();
+        EndCrystalEntity bestCrystal = null;
+        double bestDist = breakRange.getValue().doubleValue();
         
         for (Entity entity : mc.world.getEntities()) {
-            if (entity instanceof PlayerEntity player && player != mc.player 
-                && !FriendManager.INSTANCE.isFriend(player) && player.isAlive()
-                && mc.player.distanceTo(player) <= closestDist) {
-                
-                if (inAirTarget.getValue() || player.isOnGround()) {
-                    double dist = mc.player.distanceTo(player);
-                    if (dist < closestDist) {
-                        closestDist = dist;
-                        closest = player;
-                    }
+            if (entity instanceof EndCrystalEntity crystal && crystal.isAlive()) {
+                double dist = mc.player.distanceTo(crystal);
+                if (dist <= bestDist && (bestCrystal == null || dist < bestDist)) {
+                    bestDist = dist;
+                    bestCrystal = crystal;
                 }
             }
         }
-        return closest;
+        
+        if (bestCrystal != null) {
+            if (rotate.getValue()) {
+                float[] rots = RotationUtils.getRotationsTo(mc.player.getEyePos(), bestCrystal.getPos());
+                RotationUtils.setRotation(rots);
+            }
+            PlayerUtils.attackTarget(bestCrystal);
+        }
     }
     
     private PistonData getBestPosition(PlayerEntity target) {
         List<PistonData> positions = new ArrayList<>();
         BlockPos targetPos = getTargetPosition(target);
         
+        // Feet, body, head
         BlockPos[] levels = {targetPos, targetPos.up(), targetPos.up(2)};
         
         for (BlockPos level : levels) {
@@ -364,14 +336,16 @@ public class PistonCrystal extends Module {
                     }
                     
                     float angle = getAngleTo(pistonPos);
-                    positions.add(new PistonData(pistonPos, redstonePos, crystalPos, damage, selfDamage, angle, target.getHealth(), dir));
+                    positions.add(new PistonData(pistonPos, redstonePos, crystalPos, damage, selfDamage, angle, target.getHealth()));
                 }
             }
         }
         
         if (positions.isEmpty()) return null;
         
-        switch (sort.getValue()) {
+        // Sort
+        String sortMode = sort.getValue();
+        switch (sortMode) {
             case "CLOSEST_ANGLE":
                 positions.sort(Comparator.comparingDouble(p -> p.angle));
                 break;
@@ -383,6 +357,7 @@ public class PistonCrystal extends Module {
                 break;
         }
         
+        // Filter
         positions.removeIf(p -> p.damage < minDamage.getValue().doubleValue());
         if (safety.getValue()) {
             positions.removeIf(p -> p.selfDamage > maxLocalDamage.getValue().doubleValue());
@@ -391,39 +366,70 @@ public class PistonCrystal extends Module {
         return positions.isEmpty() ? null : positions.get(0);
     }
     
-    private float getAngleTo(BlockPos pos) {
-        float[] rots = RotationUtils.getRotationsTo(mc.player.getEyePos(), pos.toCenterPos());
-        float deltaYaw = Math.abs(rots[0] - mc.player.getYaw());
-        float deltaPitch = Math.abs(rots[1] - mc.player.getPitch());
-        return deltaYaw + deltaPitch;
-    }
-    
     private BlockPos getTargetPosition(PlayerEntity target) {
         BlockPos pos = target.getBlockPos();
         
         if (selfExtrapolate.getValue() && extrapolationOffset > 0) {
             Vec3d velocity = target.getVelocity();
-            if (velocity.length() > 0.1) {
+            if (Math.abs(velocity.x) > 0.1 || Math.abs(velocity.z) > 0.1) {
                 int ticks = Math.min(extrapolationOffset, extrapolationTicks.getValue().intValue());
-                double offsetX = velocity.x * ticks;
-                double offsetZ = velocity.z * ticks;
-                pos = new BlockPos(
-                    (int) Math.round(target.getX() + offsetX),
-                    (int) target.getY(),
-                    (int) Math.round(target.getZ() + offsetZ)
-                );
+                int offsetX = (int) Math.round(velocity.x * ticks);
+                int offsetZ = (int) Math.round(velocity.z * ticks);
+                pos = new BlockPos(pos.getX() + offsetX, pos.getY(), pos.getZ() + offsetZ);
             }
         }
         
         return pos;
     }
     
+    private float getAngleTo(BlockPos pos) {
+        float[] rots = RotationUtils.getRotationsTo(mc.player.getEyePos(), pos.toCenterPos());
+        float deltaYaw = Math.abs(MathHelper.wrapDegrees(rots[0] - mc.player.getYaw()));
+        float deltaPitch = Math.abs(rots[1] - mc.player.getPitch());
+        return deltaYaw + deltaPitch;
+    }
+    
     private boolean canPlacePiston(BlockPos pos, Direction dir) {
         if (!BlockUtils.canPlaceBlock(pos, grim.getValue())) return false;
         if (!BlockUtils.isInRange(pos, placeRange.getValue().floatValue())) return false;
         
+        // Check 2 blocks behind for piston extension
         BlockPos behind = pos.offset(dir.getOpposite(), 2);
         return mc.world.getBlockState(behind).isAir();
+    }
+    
+    private PlayerEntity getTarget() {
+        PlayerEntity closest = null;
+        double closestDist = targetRange.getValue().doubleValue();
+        
+        for (Entity entity : mc.world.getEntities()) {
+            if (entity instanceof PlayerEntity player && player != mc.player 
+                && !FriendManager.INSTANCE.isFriend(player) && player.isAlive()
+                && mc.player.distanceTo(player) <= closestDist) {
+                
+                if (inAirTarget.getValue() || player.isOnGround()) {
+                    double dist = mc.player.distanceTo(player);
+                    if (dist < closestDist) {
+                        closestDist = dist;
+                        closest = player;
+                    }
+                }
+            }
+        }
+        return closest;
+    }
+    
+    private boolean hasRequiredItems() {
+        switch (swapAction.getValue()) {
+            case "NONE":
+                return true;
+            case "HOTBAR":
+                return InventoryUtils.getHotbarItemSlot(Items.PISTON) != -1 
+                    || InventoryUtils.getHotbarItemSlot(Items.STICKY_PISTON) != -1;
+            default:
+                return getInventoryItemSlot(Items.PISTON) != -1 
+                    || getInventoryItemSlot(Items.STICKY_PISTON) != -1;
+        }
     }
     
     private void resetState() {
@@ -431,7 +437,6 @@ public class PistonCrystal extends Module {
         didPiston = false;
         didRedstone = false;
         didCrystal = false;
-        toPlace = null;
         extrapolationOffset = 0;
     }
     
@@ -445,13 +450,13 @@ public class PistonCrystal extends Module {
         
         if (!hasRequiredItems()) {
             ChatUtils.sendMessage("[PistonCrystal] Missing required items!");
-            this.toggle();
+            toggle();
         }
     }
     
     @Override
     public String getDescription() {
-        return "PistonCrystal - Push target into crystal using pistons at feet, body, and head levels";
+        return "PistonCrystal - Push target into crystal using pistons";
     }
     
     @Getter
@@ -464,10 +469,9 @@ public class PistonCrystal extends Module {
         private final float selfDamage;
         private final float angle;
         private final float targetHealth;
-        private final Direction pistonDir;
         
         public PistonData(BlockPos pistonPos, BlockPos redstonePos, BlockPos crystalPos,
-                         float damage, float selfDamage, float angle, float targetHealth, Direction pistonDir) {
+                         float damage, float selfDamage, float angle, float targetHealth) {
             this.pistonPos = pistonPos;
             this.redstonePos = redstonePos;
             this.crystalPos = crystalPos;
@@ -475,7 +479,6 @@ public class PistonCrystal extends Module {
             this.selfDamage = selfDamage;
             this.angle = angle;
             this.targetHealth = targetHealth;
-            this.pistonDir = pistonDir;
         }
     }
 }
